@@ -8,7 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import odeint
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, WhiteKernel
+from sklearn.gaussian_process.kernels import RBF, WhiteKernel, Matern
 from scipy.stats import multivariate_normal
 from nnest.nested import NestedSampler
 
@@ -30,25 +30,26 @@ class Ebola(object):
         # Differential death counts
         self.delta_deaths = df['Total Deaths'].values[1:] - df['Total Deaths'].values[:-1]
         # GP fit
-        kernel = 1 * RBF(length_scale=1000, length_scale_bounds=(10, 10000)) + \
-                 WhiteKernel(noise_level=1000, noise_level_bounds=(10, 1000))
-        gp = GaussianProcessRegressor(kernel=kernel).fit(df['delta_time_days'].values[:, np.newaxis],
+        kernel = 1 * Matern(length_scale=1000, length_scale_bounds=(150, 1000), nu=2.5) + \
+                 WhiteKernel(noise_level=1000, noise_level_bounds=(100, 10000))
+        gp = GaussianProcessRegressor(kernel=kernel, alpha=0).fit(df['delta_time_days'].values[:, np.newaxis],
                                                          df['Total Cases'].values)
+        print(gp.kernel_)
         self.cases_mean, self.cases_cov = gp.predict(df['delta_time_days'].values[:, np.newaxis], return_cov=True)
-        gp = GaussianProcessRegressor(kernel=kernel).fit(df['delta_time_days'].values[:, np.newaxis],
+        gp = GaussianProcessRegressor(kernel=kernel, alpha=0).fit(df['delta_time_days'].values[:, np.newaxis],
                                                          df['Total Deaths'].values)
+        print(gp.kernel_)
         self.deaths_mean, self.deaths_cov = gp.predict(df['delta_time_days'].values[:, np.newaxis], return_cov=True)
 
         if self.plot:
             X_ = df['delta_time_days'].values
-            plt.plot(X_, self.cases_mean, 'k', lw=3, zorder=9)
-            plt.fill_between(X_, self.cases_mean - np.sqrt(np.diag(self.cases_cov)), self.cases_mean + np.sqrt(np.diag(self.cases_cov)), alpha=0.5, color='k')
-            plt.scatter(df['delta_time_days'].values, df['Total Cases'].values, c='r', s=50, zorder=10, edgecolors=(0, 0, 0))
-            plt.show()
-
-            plt.plot(X_, self.deaths_mean, 'k', lw=3, zorder=9)
-            plt.fill_between(X_, self.deaths_mean - np.sqrt(np.diag(self.deaths_cov)), self.deaths_mean + np.sqrt(np.diag(self.deaths_cov)), alpha=0.5, color='k')
-            plt.scatter(df['delta_time_days'].values, df['Total Deaths'].values, c='r', s=50, zorder=10, edgecolors=(0, 0, 0))
+            f, ax = plt.subplots(2)
+            ax[0].plot(X_, self.cases_mean, 'k', lw=3, zorder=9)
+            ax[0].fill_between(X_, self.cases_mean - np.sqrt(np.diag(self.cases_cov)), self.cases_mean + np.sqrt(np.diag(self.cases_cov)), alpha=0.5, color='k')
+            ax[0].scatter(df['delta_time_days'].values, df['Total Cases'].values, c='r', s=50, zorder=10, edgecolors=(0, 0, 0))
+            ax[1].plot(X_, self.deaths_mean, 'k', lw=3, zorder=9)
+            ax[1].fill_between(X_, self.deaths_mean - np.sqrt(np.diag(self.deaths_cov)), self.deaths_mean + np.sqrt(np.diag(self.deaths_cov)), alpha=0.5, color='k')
+            ax[1].scatter(df['delta_time_days'].values, df['Total Deaths'].values, c='r', s=50, zorder=10, edgecolors=(0, 0, 0))
             plt.show()
 
     def rate(self, y, t, beta, k, tau, sigma, gamma, f):
