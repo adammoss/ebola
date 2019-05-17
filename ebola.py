@@ -7,9 +7,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import odeint
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, WhiteKernel, Matern
-from scipy.stats import multivariate_normal
+import gpflow
 from nnest.nested import NestedSampler
 
 
@@ -30,27 +28,24 @@ class Ebola(object):
         # Differential death counts
         self.delta_deaths = df['Total Deaths'].values[1:] - df['Total Deaths'].values[:-1]
         # GP fit
-        kernel = 1 * Matern(length_scale=1000, length_scale_bounds=(150, 1000), nu=2.5) + \
-                 WhiteKernel(noise_level=1000, noise_level_bounds=(100, 10000))
-        gp = GaussianProcessRegressor(kernel=kernel, alpha=0).fit(df['delta_time_days'].values[:, np.newaxis],
-                                                         df['Total Cases'].values)
-        print(gp.kernel_)
-        self.cases_mean, self.cases_cov = gp.predict(df['delta_time_days'].values[:, np.newaxis], return_cov=True)
-        gp = GaussianProcessRegressor(kernel=kernel, alpha=0).fit(df['delta_time_days'].values[:, np.newaxis],
-                                                         df['Total Deaths'].values)
-        print(gp.kernel_)
-        self.deaths_mean, self.deaths_cov = gp.predict(df['delta_time_days'].values[:, np.newaxis], return_cov=True)
-
-        if self.plot:
-            X_ = df['delta_time_days'].values
-            f, ax = plt.subplots(2)
-            ax[0].plot(X_, self.cases_mean, 'k', lw=3, zorder=9)
-            ax[0].fill_between(X_, self.cases_mean - np.sqrt(np.diag(self.cases_cov)), self.cases_mean + np.sqrt(np.diag(self.cases_cov)), alpha=0.5, color='k')
-            ax[0].scatter(df['delta_time_days'].values, df['Total Cases'].values, c='r', s=50, zorder=10, edgecolors=(0, 0, 0))
-            ax[1].plot(X_, self.deaths_mean, 'k', lw=3, zorder=9)
-            ax[1].fill_between(X_, self.deaths_mean - np.sqrt(np.diag(self.deaths_cov)), self.deaths_mean + np.sqrt(np.diag(self.deaths_cov)), alpha=0.5, color='k')
-            ax[1].scatter(df['delta_time_days'].values, df['Total Deaths'].values, c='r', s=50, zorder=10, edgecolors=(0, 0, 0))
-            plt.show()
+        with gpflow.defer_build():
+            k = gpflow.kernels.Matern52(1)
+            self.mc = gpflow.models.GPR(df['delta_time_days'].values[:, np.newaxis].astype('float'),
+                                        df['Total Cases'].values[:, np.newaxis].astype('float'), kern=k)
+            self.mc.likelihood.variance.trainable = False
+            self.mc.likelihood.variance = 300 ** 2
+        self.mc.compile()
+        gpflow.train.ScipyOptimizer().minimize(self.mc)
+        print(self.mc.as_pandas_table())
+        with gpflow.defer_build():
+            k = gpflow.kernels.Matern52(1)
+            self.md = gpflow.models.GPR(df['delta_time_days'].values[:, np.newaxis].astype('float'),
+                                        df['Total Deaths'].values[:, np.newaxis].astype('float'), kern=k)
+            self.md.likelihood.variance.trainable = False
+            self.md.likelihood.variance = 300 ** 2
+        self.md.compile()
+        gpflow.train.ScipyOptimizer().minimize(self.md)
+        print(self.md.as_pandas_table())
 
     def rate(self, y, t, beta, k, tau, sigma, gamma, f):
         S, E, I, R, C, D = y
@@ -84,14 +79,14 @@ class Ebola(object):
 
     def __call__(self, theta):
         sol = self.solve(*theta)
-        loglike = multivariate_normal.logpdf(sol[1:, 4], mean=self.cases_mean, cov=self.cases_cov) + \
-                  multivariate_normal.logpdf(sol[1:, 5], mean=self.deaths_mean, cov=self.deaths_cov)
-        return loglike
+        loglike = self.mc.predict_density(self.df['delta_time_days'][:, np.newaxis].astype('float'), sol[1:, 4:5]) + \
+                  self.md.predict_density(self.df['delta_time_days'][:, np.newaxis].astype('float'), sol[1:, 5:6])
+        return np.sum(loglike)
 
 
 def main(args):
 
-    e = Ebola(args.N, args.country, plot=False)
+    e = Ebola(args.N, args.country, plot=True)
 
     def loglike(z):
         return np.array([e(x) for x in z])
@@ -108,7 +103,6 @@ def main(args):
         ]).T
 
     log_dir = os.path.join(args.log_dir, args.country)
-
     sampler = NestedSampler(args.x_dim, loglike, transform=transform, log_dir=log_dir, num_live_points=args.num_live_points,
                             hidden_dim=args.hidden_dim, num_layers=args.num_layers, num_blocks=args.num_blocks, num_slow=args.num_slow,
                             use_gpu=args.use_gpu)
@@ -124,7 +118,7 @@ if __name__ == '__main__':
     parser.add_argument('--train_iters', type=int, default=50,
                         help="number of train iters")
     parser.add_argument("--mcmc_steps", type=int, default=0)
-    parser.add_argument("--num_live_points", type=int, default=1000)
+    parser.add_argument("--num_live_points", type=int, default=50)
     parser.add_argument('--switch', type=float, default=-1)
     parser.add_argument('--hidden_dim', type=int, default=128)
     parser.add_argument('--num_layers', type=int, default=2)
