@@ -86,7 +86,7 @@ class Ebola(object):
 
 def main(args):
 
-    e = Ebola(args.N, args.country, plot=True)
+    e = Ebola(args.N, args.country, plot=False)
 
     def loglike(z):
         return np.array([e(x) for x in z])
